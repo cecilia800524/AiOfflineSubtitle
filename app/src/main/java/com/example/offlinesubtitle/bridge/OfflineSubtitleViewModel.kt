@@ -12,10 +12,6 @@ import com.example.offlinesubtitle.service.SubtitleRuntimeCoordinator
 import com.example.offlinesubtitle.subtitle.SubtitleUiState
 import kotlinx.coroutines.flow.StateFlow
 
-/**
- * 透過 lifecycle-viewmodel-compose 供 Compose UI 與 MainActivity 共同訂閱的 ViewModel，
- * 內部所有指令皆經由 OfflineSubtitleBridge 與 ForegroundService / StateManager 連動。
- */
 class OfflineSubtitleViewModel(application: Application) : AndroidViewModel(application) {
 
     val bridge: OfflineSubtitleBridge =
@@ -26,6 +22,11 @@ class OfflineSubtitleViewModel(application: Application) : AndroidViewModel(appl
 
     fun attachHost(callbacks: BridgeHostCallbacks) = bridge.attachHost(callbacks)
     fun detachHost() = bridge.detachHost()
+
+    fun onPickModelFolderClick() = bridge.handlePickModelFolderClick()
+    fun onModelFolderPicked(treeUri: Uri) = bridge.handleModelFolderPicked(treeUri)
+    fun onApplyModelPath(path: String) = bridge.handleApplyModelPath(path)
+    fun onResetModelPath() = bridge.handleResetModelPath()
 
     fun onStartStopClick(hasMicPermission: Boolean) = bridge.handleStartOrStopToggle(hasMicPermission)
     fun onMediaProjectionGranted(resultCode: Int, data: Intent) =

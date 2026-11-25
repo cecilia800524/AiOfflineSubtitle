@@ -37,7 +37,10 @@ data class SubtitleUiState(
     val inputSource: AudioInputSource = AudioInputSource.MICROPHONE,
     val backendTag: BackendTag = BackendTag.QNN_NPU,
     val activeEngineLabel: String = "Mock NPU",
-    val resolvedModelPath: String = "",
+    val currentModelPath: String = "",
+    val isCustomModelPath: Boolean = false,
+    val modelPathError: String? = null,
+    val modelPathAlertEventId: Long = 0L,
     val isModelLoaded: Boolean = true,
     val modelsDiskSizeMb: Double = 0.0,
     val isSpeechActive: Boolean = false,
@@ -98,6 +101,7 @@ class SubtitleStateManager(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val bufferMutex = Mutex()
     private val segmentIdGen = AtomicLong(0L)
+    private val alertEventGen = AtomicLong(0L)
     private val isDraftInFlight = AtomicBoolean(false)
 
     @Volatile
@@ -117,23 +121,59 @@ class SubtitleStateManager(
     private var inferConsumerJob: Job? = null
     private var inferChannel = Channel<InferTask>(Channel.UNLIMITED)
 
+    private val initialLocation = localNpuAsrEngine?.inspectModelLocation()
+
     private val _uiState = MutableStateFlow(
         SubtitleUiState(
             backendTag = initialEngine.currentBackend,
-            resolvedModelPath = localNpuAsrEngine?.getActiveModelDir()?.absolutePath ?: "",
-            modelsDiskSizeMb = localNpuAsrEngine?.calculateModelsDiskUsageMb() ?: 0.0
+            currentModelPath = initialLocation?.activePath ?: "",
+            isCustomModelPath = initialLocation?.isCustomPath ?: false,
+            modelsDiskSizeMb = initialLocation?.diskUsageMb ?: 0.0
         )
     )
     val uiState: StateFlow<SubtitleUiState> = _uiState.asStateFlow()
 
     fun getCurrentEngine(): AsrEngine = activeAsrEngine
 
-    fun refreshModelDiskUsage() {
+    /**
+     * 套用自訂模型路徑（文字輸入或 SAF URI），立即 refreshModelDiskUsage 並檢查是否存在 encoder.onnx。
+     */
+    fun applyCustomModelPath(path: String) {
         val local = localNpuAsrEngine ?: return
-        _uiState.update {
-            it.copy(
-                resolvedModelPath = local.getActiveModelDir().absolutePath,
-                modelsDiskSizeMb = local.calculateModelsDiskUsageMb()
+        local.setCustomModelPath(path)
+        refreshModelDiskUsage(validateAndAlert = true)
+    }
+
+    /**
+     * 清除 SharedPreferences 中的 custom_model_path，恢復為 getExternalFilesDir(null)/models/whisper-tiny。
+     */
+    fun resetModelPathToDefault() {
+        val local = localNpuAsrEngine ?: return
+        local.resetCustomModelPath()
+        refreshModelDiskUsage(validateAndAlert = true)
+    }
+
+    fun refreshModelDiskUsage(validateAndAlert: Boolean = false) {
+        val local = localNpuAsrEngine ?: return
+        val status = local.inspectModelLocation()
+        val shouldAlert = validateAndAlert && status.errorMessage != null
+
+        _uiState.update { state ->
+            state.copy(
+                currentModelPath = status.activePath,
+                isCustomModelPath = status.isCustomPath,
+                modelsDiskSizeMb = status.diskUsageMb,
+                modelPathError = if (validateAndAlert) status.errorMessage else if (status.hasEncoderOnnx) null else state.modelPathError,
+                modelPathAlertEventId = if (shouldAlert) alertEventGen.incrementAndGet() else state.modelPathAlertEventId,
+                statusMessage = if (validateAndAlert) {
+                    status.errorMessage ?: String.format(
+                        Locale.US,
+                        "已套用模型路徑 (%.1f MB)",
+                        status.diskUsageMb
+                    )
+                } else {
+                    state.statusMessage
+                }
             )
         }
     }
@@ -163,9 +203,10 @@ class SubtitleStateManager(
                 engine.setProfile(localProfile)
             }
 
+            // 載入前先讀取 custom_model_path（若有則用自訂，無則用預設）並更新磁碟用量
+            val locStatus = localNpuAsrEngine?.inspectModelLocation()
             val initResult = engine.initialize()
-            val diskMb = localNpuAsrEngine?.calculateModelsDiskUsageMb() ?: 0.0
-            val activePath = localNpuAsrEngine?.getActiveModelDir()?.absolutePath ?: ""
+            val updatedStatus = localNpuAsrEngine?.inspectModelLocation() ?: locStatus
             activeAsrEngine = engine
 
             if (initResult.isSuccess) {
@@ -174,19 +215,25 @@ class SubtitleStateManager(
                         activeEngineLabel = label,
                         backendTag = engine.currentBackend,
                         isModelLoaded = true,
-                        resolvedModelPath = activePath,
-                        modelsDiskSizeMb = diskMb,
+                        currentModelPath = updatedStatus?.activePath ?: it.currentModelPath,
+                        isCustomModelPath = updatedStatus?.isCustomPath ?: it.isCustomModelPath,
+                        modelPathError = null,
+                        modelsDiskSizeMb = updatedStatus?.diskUsageMb ?: 0.0,
                         statusMessage = "已載入 $label (${engine.currentBackend.label})"
                     )
                 }
             } else {
+                val errMsg = initResult.exceptionOrNull()?.message ?: "找不到 encoder.onnx"
                 _uiState.update {
                     it.copy(
                         activeEngineLabel = label,
                         isModelLoaded = false,
-                        resolvedModelPath = activePath,
-                        modelsDiskSizeMb = diskMb,
-                        statusMessage = initResult.exceptionOrNull()?.message ?: "載入失敗"
+                        currentModelPath = updatedStatus?.activePath ?: it.currentModelPath,
+                        isCustomModelPath = updatedStatus?.isCustomPath ?: it.isCustomModelPath,
+                        modelPathError = errMsg,
+                        modelPathAlertEventId = alertEventGen.incrementAndGet(),
+                        modelsDiskSizeMb = updatedStatus?.diskUsageMb ?: 0.0,
+                        statusMessage = errMsg
                     )
                 }
             }
@@ -244,7 +291,7 @@ class SubtitleStateManager(
             ),
             SubtitleSegment(
                 id = baseId + 3,
-                text = "Whisper Tiny 模型存放於 getExternalFilesDir 外部私有目錄，並透過 OfflineSubtitleBridge 同步狀態。",
+                text = "目前模型路徑設定為 ${_uiState.value.currentModelPath}，並透過 OfflineSubtitleBridge 雙向同步。",
                 isFinal = true,
                 startTimeMs = 7_500L,
                 endTimeMs = 11_800L,
@@ -348,12 +395,23 @@ class SubtitleStateManager(
             if (!_uiState.value.isModelLoaded) {
                 val initRes = activeAsrEngine.initialize()
                 if (initRes.isFailure) {
+                    val err = initRes.exceptionOrNull()?.message ?: "找不到 encoder.onnx"
                     _uiState.update {
-                        it.copy(statusMessage = initRes.exceptionOrNull()?.message ?: "模型未載入")
+                        it.copy(
+                            modelPathError = err,
+                            modelPathAlertEventId = alertEventGen.incrementAndGet(),
+                            statusMessage = err
+                        )
                     }
                     return@launch
                 }
-                _uiState.update { it.copy(isModelLoaded = true, backendTag = activeAsrEngine.currentBackend) }
+                _uiState.update {
+                    it.copy(
+                        isModelLoaded = true,
+                        modelPathError = null,
+                        backendTag = activeAsrEngine.currentBackend
+                    )
+                }
             }
 
             resetWindowCounters()

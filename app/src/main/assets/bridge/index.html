@@ -26,12 +26,29 @@
         <span id="bridgeRtf" class="metric">RTF: 0.000</span>
       </div>
       <div class="sub-row">
-        <span id="bridgeModelInfo">模型目錄: Android/data/.../files/models/whisper-tiny</span>
-      </div>
-      <div class="sub-row">
         <span id="bridgeSysInfo">磁碟: 0.0MB | PSS: 0.0MB | 漂移: 0ms</span>
         <span id="bridgeVad" class="vad-badge">VAD: 靜音</span>
       </div>
+    </section>
+
+    <!-- 模型路徑設定框（與 MainScreen 同步） -->
+    <section class="card">
+      <div class="sub-row">
+        <span class="label-bold">模型路徑設定</span>
+        <span id="bridgeModelSizeTag" class="label-muted">0.0 MB</span>
+      </div>
+      <input
+        id="inputBridgeModelPath"
+        type="text"
+        class="path-input"
+        placeholder="getExternalFilesDir(null)/models/whisper-tiny"
+      />
+      <div class="controls">
+        <button id="btnPickModelFolder" class="btn-sm flex-1">選擇資料夾</button>
+        <button id="btnApplyModelPath" class="btn-sm flex-1">套用</button>
+        <button id="btnResetModelPath" class="btn-sm flex-1">重設為預設</button>
+      </div>
+      <p id="bridgePathAlert" class="path-alert hidden"></p>
     </section>
 
     <section class="controls">

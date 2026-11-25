@@ -1,5 +1,6 @@
 package com.example.offlinesubtitle.ui
 
+import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Eject
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Mic
@@ -41,7 +43,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -58,6 +63,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,6 +89,9 @@ fun MainScreen(
     onStartStopClick: () -> Unit,
     onToggleOverlayClick: () -> Unit,
     onImportAudioClick: () -> Unit,
+    onPickModelFolderClick: () -> Unit,
+    onApplyModelPath: (String) -> Unit,
+    onResetModelPath: () -> Unit,
     onSwitchToMockModel: () -> Unit,
     onSwitchToLocalModel: (LocalModelProfile) -> Unit,
     onUnloadModelClick: () -> Unit,
@@ -95,8 +104,19 @@ fun MainScreen(
     onLoadBuiltInTestMode: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+
+    // 當套用或切換路徑找不到 encoder.onnx 時，立即跳出提示
+    LaunchedEffect(uiState.modelPathAlertEventId) {
+        if (uiState.modelPathAlertEventId > 0L && !uiState.modelPathError.isNullOrBlank()) {
+            Toast.makeText(context, uiState.modelPathError, Toast.LENGTH_SHORT).show()
+            snackbarHostState.showSnackbar(uiState.modelPathError)
+        }
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -167,6 +187,9 @@ fun MainScreen(
                     onRequestMicPermission = onRequestMicPermission,
                     onStartStopClick = onStartStopClick,
                     onImportAudioClick = onImportAudioClick,
+                    onPickModelFolderClick = onPickModelFolderClick,
+                    onApplyModelPath = onApplyModelPath,
+                    onResetModelPath = onResetModelPath,
                     onSwitchToMockModel = onSwitchToMockModel,
                     onSwitchToLocalModel = onSwitchToLocalModel,
                     onUnloadModelClick = onUnloadModelClick,
@@ -199,6 +222,9 @@ private fun LiveCaptionTabContent(
     onRequestMicPermission: () -> Unit,
     onStartStopClick: () -> Unit,
     onImportAudioClick: () -> Unit,
+    onPickModelFolderClick: () -> Unit,
+    onApplyModelPath: (String) -> Unit,
+    onResetModelPath: () -> Unit,
     onSwitchToMockModel: () -> Unit,
     onSwitchToLocalModel: (LocalModelProfile) -> Unit,
     onUnloadModelClick: () -> Unit,
@@ -218,9 +244,23 @@ private fun LiveCaptionTabContent(
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         TelemetryStatusBanner(uiState = uiState)
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // 模型路徑設定框（顯示與編輯目前路徑 + [選擇資料夾] [套用] [重設為預設]）
+        ModelPathConfigCard(
+            currentModelPath = uiState.currentModelPath,
+            isCustomPath = uiState.isCustomModelPath,
+            modelPathError = uiState.modelPathError,
+            modelsDiskSizeMb = uiState.modelsDiskSizeMb,
+            enabled = !uiState.isRunning && !uiState.isFileTranscribing,
+            onPickModelFolderClick = onPickModelFolderClick,
+            onApplyModelPath = onApplyModelPath,
+            onResetModelPath = onResetModelPath
+        )
 
         if (uiState.systemAudioSilentWarning) {
             Spacer(modifier = Modifier.height(6.dp))
@@ -309,7 +349,108 @@ private fun LiveCaptionTabContent(
             onStartStopClick = onStartStopClick
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
+    }
+}
+
+@Composable
+private fun ModelPathConfigCard(
+    currentModelPath: String,
+    isCustomPath: Boolean,
+    modelPathError: String?,
+    modelsDiskSizeMb: Double,
+    enabled: Boolean,
+    onPickModelFolderClick: () -> Unit,
+    onApplyModelPath: (String) -> Unit,
+    onResetModelPath: () -> Unit
+) {
+    var pathInput by remember { mutableStateOf(currentModelPath) }
+
+    LaunchedEffect(currentModelPath) {
+        pathInput = currentModelPath
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "模型路徑設定 (${if (isCustomPath) "自訂" else "預設"})",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = String.format(Locale.US, "磁碟用量: %.1f MB", modelsDiskSizeMb),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            OutlinedTextField(
+                value = pathInput,
+                onValueChange = { pathInput = it },
+                enabled = enabled,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall,
+                placeholder = { Text("getExternalFilesDir(null)/models/whisper-tiny") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onPickModelFolderClick,
+                    enabled = enabled,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.weight(1.1f)
+                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("選擇資料夾", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                }
+
+                OutlinedButton(
+                    onClick = { onApplyModelPath(pathInput) },
+                    enabled = enabled,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.weight(0.75f)
+                ) {
+                    Text("套用", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                }
+
+                OutlinedButton(
+                    onClick = onResetModelPath,
+                    enabled = enabled,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("重設為預設", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                }
+            }
+
+            if (!modelPathError.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = modelPathError,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
     }
 }
 
@@ -337,7 +478,7 @@ private fun TelemetryStatusBanner(uiState: SubtitleUiState) {
         shape = RoundedCornerShape(12.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(10.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -403,17 +544,6 @@ private fun TelemetryStatusBanner(uiState: SubtitleUiState) {
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
-            }
-
-            if (uiState.resolvedModelPath.isNotBlank()) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "模型路徑: ${uiState.resolvedModelPath}",
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
 
             Spacer(modifier = Modifier.height(6.dp))
@@ -623,7 +753,7 @@ private fun EmptySubtitlePlaceholder(
             text = if (isRunning) {
                 "前景服務運作中，偵測到語音後將即時顯示字幕..."
             } else {
-                "選擇「麥克風 / 系統音訊 / 模擬音訊」並點擊開始；可隨時開啟右上角懸浮窗或切換 Bridge UI"
+                "選擇「麥克風 / 系統音訊 / 模擬音訊」並點擊開始；上方可設定自訂或 SAF 模型路徑"
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant

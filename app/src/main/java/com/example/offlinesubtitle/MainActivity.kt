@@ -61,6 +61,28 @@ class MainActivity : ComponentActivity(), BridgeHostCallbacks {
         }
     }
 
+    private val modelFolderPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val treeUri = result.data?.data
+        if (result.resultCode == Activity.RESULT_OK && treeUri != null) {
+            val takeFlags = (result.data?.flags ?: 0) and
+                (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            val resolvedFlags = if (takeFlags != 0) takeFlags else Intent.FLAG_GRANT_READ_URI_PERMISSION
+            runCatching {
+                contentResolver.takePersistableUriPermission(treeUri, resolvedFlags)
+            }.onFailure {
+                runCatching {
+                    contentResolver.takePersistableUriPermission(
+                        treeUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+            }
+            subtitleViewModel.onModelFolderPicked(treeUri)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -86,6 +108,9 @@ class MainActivity : ComponentActivity(), BridgeHostCallbacks {
                         onStartStopClick = { vm.onStartStopClick(hasMicPermission) },
                         onToggleOverlayClick = { vm.onToggleOverlay() },
                         onImportAudioClick = { vm.onImportAudioClick() },
+                        onPickModelFolderClick = { vm.onPickModelFolderClick() },
+                        onApplyModelPath = { path -> vm.onApplyModelPath(path) },
+                        onResetModelPath = { vm.onResetModelPath() },
                         onSwitchToMockModel = { vm.onSwitchToMockModel() },
                         onSwitchToLocalModel = { profile -> vm.onSwitchToLocalModel(profile) },
                         onUnloadModelClick = { vm.onUnloadModel() },
@@ -112,8 +137,6 @@ class MainActivity : ComponentActivity(), BridgeHostCallbacks {
         super.onDestroy()
         subtitleViewModel.detachHost()
     }
-
-    // --- BridgeHostCallbacks 實作 ---
 
     override fun requestMicAndNotificationPermissions() {
         val needed = buildList {
@@ -144,6 +167,18 @@ class MainActivity : ComponentActivity(), BridgeHostCallbacks {
 
     override fun launchAudioFilePicker() {
         audioFilePickerLauncher.launch(arrayOf("audio/*", "video/mp4"))
+    }
+
+    override fun launchModelFolderPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+            )
+        }
+        modelFolderPickerLauncher.launch(intent)
     }
 
     override fun launchShareSheet(shareUri: Uri, mimeType: String, formatLabel: String) {

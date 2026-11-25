@@ -5,8 +5,10 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtException
 import ai.onnxruntime.OrtSession
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
+import android.provider.DocumentsContract
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -18,6 +20,7 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
+import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.log10
@@ -26,8 +29,8 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 /**
- * 對應 getExternalFilesDir(null)/models/<dirName>：
- * 預設 WHISPER_TINY_QNN -> Android/data/com.example.offlinesubtitle/files/models/whisper-tiny/
+ * 模型配置檔：
+ * 預設 WHISPER_TINY_QNN -> getExternalFilesDir(null)/models/whisper-tiny
  */
 enum class LocalModelProfile(
     val dirName: String,
@@ -37,6 +40,15 @@ enum class LocalModelProfile(
     WHISPER_SMALL_QNN("whisper-small", "Whisper Small (本地 NPU)")
 }
 
+data class ModelLocationStatus(
+    val activePath: String,
+    val isCustomPath: Boolean,
+    val directoryExists: Boolean,
+    val hasEncoderOnnx: Boolean,
+    val diskUsageMb: Double,
+    val errorMessage: String?
+)
+
 class LocalNpuAsrEngine(
     private val context: Context,
     private var profile: LocalModelProfile = LocalModelProfile.WHISPER_TINY_QNN
@@ -45,6 +57,9 @@ class LocalNpuAsrEngine(
     companion object {
         private const val TAG_PERF = "[ASR_PERF]"
         private const val TAG_STATE = "[ASR_STATE]"
+
+        private const val PREFS_NAME = "offline_subtitle_prefs"
+        const val KEY_CUSTOM_MODEL_PATH = "custom_model_path"
 
         private const val SAMPLE_RATE = 16_000
         private const val MAX_SAMPLES = 30 * SAMPLE_RATE
@@ -59,6 +74,17 @@ class LocalNpuAsrEngine(
         private const val DEFAULT_EOT = 50257
     }
 
+    private data class SafScanResult(
+        val exists: Boolean,
+        val totalBytes: Long,
+        val encoderDocId: String?,
+        val decoderDocId: String?,
+        val qnnEncoderDocId: String?,
+        val qnnDecoderDocId: String?,
+        val vocabDocId: String?
+    )
+
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val ortEnv: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val inferMutex = Mutex()
     private val melExtractor = WhisperLogMelExtractor()
@@ -83,49 +109,106 @@ class LocalNpuAsrEngine(
         get() = activeBackend
 
     init {
-        ensureExternalModelDirectories()
+        ensureDefaultModelDirectories()
     }
 
     /**
-     * 使用 getExternalFilesDir(null)/models，讓手機檔案總管可直接瀏覽：
-     * Android/data/com.example.offlinesubtitle/files/models/whisper-tiny/
+     * 預設路徑：getExternalFilesDir(null)/models/whisper-tiny
      */
-    fun getModelsRootDir(): File {
-        val externalFilesRoot = context.getExternalFilesDir(null) ?: context.filesDir
-        return File(externalFilesRoot, "models").apply {
+    fun getDefaultModelDir(): File {
+        val externalRoot = context.getExternalFilesDir(null) ?: context.filesDir
+        return File(externalRoot, "models/${profile.dirName}").apply {
             if (!exists()) mkdirs()
         }
     }
 
-    fun getActiveModelDir(): File {
-        return File(getModelsRootDir(), profile.dirName).apply {
-            if (!exists()) mkdirs()
+    fun getCustomModelPath(): String? {
+        return prefs.getString(KEY_CUSTOM_MODEL_PATH, null)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+    }
+
+    fun getEffectiveModelPath(): String {
+        return getCustomModelPath() ?: getDefaultModelDir().absolutePath
+    }
+
+    fun setCustomModelPath(rawPath: String) {
+        val trimmed = rawPath.trim()
+        if (trimmed.isEmpty()) {
+            resetCustomModelPath()
+        } else {
+            prefs.edit().putString(KEY_CUSTOM_MODEL_PATH, trimmed).apply()
+            Log.i(TAG_STATE, "Saved custom_model_path=$trimmed")
         }
     }
 
-    private fun ensureExternalModelDirectories() {
+    fun resetCustomModelPath() {
+        prefs.edit().remove(KEY_CUSTOM_MODEL_PATH).apply()
+        ensureDefaultModelDirectories()
+        Log.i(TAG_STATE, "Cleared custom_model_path, reverted to default=${getDefaultModelDir().absolutePath}")
+    }
+
+    private fun ensureDefaultModelDirectories() {
         runCatching {
-            val root = getModelsRootDir()
+            val externalRoot = context.getExternalFilesDir(null) ?: context.filesDir
+            val modelsRoot = File(externalRoot, "models").apply { if (!exists()) mkdirs() }
             LocalModelProfile.entries.forEach { p ->
-                val dir = File(root, p.dirName)
+                val dir = File(modelsRoot, p.dirName)
                 if (!dir.exists()) dir.mkdirs()
             }
-            Log.i(TAG_STATE, "External model directory ready: ${getActiveModelDir().absolutePath}")
         }
     }
 
-    fun calculateModelsDiskUsageMb(): Double {
-        val root = getModelsRootDir()
-        if (!root.exists()) return 0.0
-        val totalBytes = root.walkTopDown()
-            .filter { it.isFile }
-            .sumOf { it.length() }
-        return totalBytes / (1024.0 * 1024.0)
+    /**
+     * 優先讀取 SharedPreferences 的 custom_model_path，無自訂則讀取預設目錄，
+     * 並檢查目錄存在性、encoder.onnx 存在性及磁碟空間用量 (MB)。
+     */
+    fun inspectModelLocation(): ModelLocationStatus {
+        val customPath = getCustomModelPath()
+        val effectivePath = customPath ?: getDefaultModelDir().absolutePath
+
+        if (effectivePath.startsWith("content://")) {
+            val safScan = scanSafTree(Uri.parse(effectivePath))
+            val hasEncoder = safScan.exists && (safScan.encoderDocId != null || safScan.qnnEncoderDocId != null)
+            val diskMb = safScan.totalBytes / (1024.0 * 1024.0)
+            val err = if (!safScan.exists || !hasEncoder) "找不到 encoder.onnx" else null
+            return ModelLocationStatus(
+                activePath = effectivePath,
+                isCustomPath = true,
+                directoryExists = safScan.exists,
+                hasEncoderOnnx = hasEncoder,
+                diskUsageMb = diskMb,
+                errorMessage = err
+            )
+        }
+
+        val dir = resolveFileDirectory(effectivePath)
+        val dirExists = dir.exists() && dir.isDirectory
+        val hasEncoder = dirExists && (
+            File(dir, "encoder.onnx").exists() ||
+                File(dir, "encoder_qnn_ctx.onnx").exists()
+            )
+        val diskMb = if (dirExists) {
+            dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } / (1024.0 * 1024.0)
+        } else {
+            0.0
+        }
+        val err = if (!dirExists || !hasEncoder) "找不到 encoder.onnx" else null
+        return ModelLocationStatus(
+            activePath = dir.absolutePath,
+            isCustomPath = customPath != null,
+            directoryExists = dirExists,
+            hasEncoderOnnx = hasEncoder,
+            diskUsageMb = diskMb,
+            errorMessage = err
+        )
     }
+
+    fun calculateModelsDiskUsageMb(): Double = inspectModelLocation().diskUsageMb
 
     fun setProfile(newProfile: LocalModelProfile) {
         profile = newProfile
-        ensureExternalModelDirectories()
+        ensureDefaultModelDirectories()
     }
 
     fun getProfile(): LocalModelProfile = profile
@@ -139,11 +222,25 @@ class LocalNpuAsrEngine(
         inferMutex.withLock {
             releaseInternal()
 
-            val modelDir = getActiveModelDir()
-            val qnnEncoderCtx = File(modelDir, "encoder_qnn_ctx.onnx")
-            val qnnDecoderCtx = File(modelDir, "decoder_qnn_ctx.onnx")
-            val stdEncoder = File(modelDir, "encoder.onnx")
-            val stdDecoder = File(modelDir, "decoder.onnx")
+            val effectivePath = getEffectiveModelPath()
+            val resolvedDir: File = if (effectivePath.startsWith("content://")) {
+                prepareSafModelsIntoCache(Uri.parse(effectivePath)).getOrElse { err ->
+                    return@withContext Result.failure(err)
+                }
+            } else {
+                resolveFileDirectory(effectivePath)
+            }
+
+            if (!resolvedDir.exists() || !resolvedDir.isDirectory) {
+                val msg = "找不到 encoder.onnx (${resolvedDir.absolutePath})"
+                Log.w(TAG_STATE, msg)
+                return@withContext Result.failure(FileNotFoundException("找不到 encoder.onnx"))
+            }
+
+            val qnnEncoderCtx = File(resolvedDir, "encoder_qnn_ctx.onnx")
+            val qnnDecoderCtx = File(resolvedDir, "decoder_qnn_ctx.onnx")
+            val stdEncoder = File(resolvedDir, "encoder.onnx")
+            val stdDecoder = File(resolvedDir, "decoder.onnx")
 
             val encFile = when {
                 preferNpu && qnnEncoderCtx.exists() -> qnnEncoderCtx
@@ -159,8 +256,8 @@ class LocalNpuAsrEngine(
             }
 
             if (encFile == null || decFile == null) {
-                val msg = "找不到本地模型檔案，請將 encoder.onnx 與 decoder.onnx 放入 ${modelDir.absolutePath}"
-                Log.w(TAG_STATE, msg)
+                val msg = if (encFile == null) "找不到 encoder.onnx" else "找不到 decoder.onnx"
+                Log.w(TAG_STATE, "$msg at ${resolvedDir.absolutePath}")
                 return@withContext Result.failure(FileNotFoundException(msg))
             }
 
@@ -199,12 +296,12 @@ class LocalNpuAsrEngine(
                 }
             }
 
-            loadTokenizerIfPresent(modelDir)
+            loadTokenizerIfPresent(resolvedDir)
             isLoaded = true
             val loadCostMs = SystemClock.elapsedRealtime() - loadStart
             Log.i(
                 TAG_PERF,
-                "Model loaded profile=${profile.dirName} path=${modelDir.absolutePath} Backend=${activeBackend.label} " +
+                "Model loaded path=${effectivePath} Backend=${activeBackend.label} " +
                     "loadTime=${loadCostMs}ms diskUsage=${"%.2f".format(calculateModelsDiskUsageMb())}MB"
             )
             Result.success(Unit)
@@ -285,6 +382,99 @@ class LocalNpuAsrEngine(
         decoderSession = null
     }
 
+    private fun resolveFileDirectory(path: String): File {
+        val trimmed = path.trim()
+        return if (trimmed.startsWith("/")) {
+            File(trimmed)
+        } else {
+            val externalRoot = context.getExternalFilesDir(null) ?: context.filesDir
+            File(externalRoot, trimmed)
+        }
+    }
+
+    private fun scanSafTree(treeUri: Uri): SafScanResult {
+        return runCatching {
+            val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocId)
+            val projection = arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_SIZE,
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+            )
+            var totalBytes = 0L
+            var encId: String? = null
+            var decId: String? = null
+            var qnnEncId: String? = null
+            var qnnDecId: String? = null
+            var vocabId: String? = null
+
+            context.contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val sizeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
+                val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+
+                while (cursor.moveToNext()) {
+                    val docId = cursor.getString(idCol)
+                    val name = cursor.getString(nameCol) ?: continue
+                    val size = if (!cursor.isNull(sizeCol)) cursor.getLong(sizeCol) else 0L
+                    val mime = cursor.getString(mimeCol) ?: ""
+                    if (mime != DocumentsContract.Document.MIME_TYPE_DIR) {
+                        totalBytes += size
+                    }
+                    when (name.lowercase(Locale.US)) {
+                        "encoder.onnx" -> encId = docId
+                        "decoder.onnx" -> decId = docId
+                        "encoder_qnn_ctx.onnx" -> qnnEncId = docId
+                        "decoder_qnn_ctx.onnx" -> qnnDecId = docId
+                        "vocab.json" -> vocabId = docId
+                    }
+                }
+            }
+            SafScanResult(
+                exists = true,
+                totalBytes = totalBytes,
+                encoderDocId = encId,
+                decoderDocId = decId,
+                qnnEncoderDocId = qnnEncId,
+                qnnDecoderDocId = qnnDecId,
+                vocabDocId = vocabId
+            )
+        }.getOrElse {
+            SafScanResult(false, 0L, null, null, null, null, null)
+        }
+    }
+
+    private fun prepareSafModelsIntoCache(treeUri: Uri): Result<File> = runCatching {
+        val scan = scanSafTree(treeUri)
+        if (!scan.exists || (scan.encoderDocId == null && scan.qnnEncoderDocId == null)) {
+            throw FileNotFoundException("找不到 encoder.onnx")
+        }
+
+        val cacheDir = File(context.cacheDir, "saf_model_cache").apply {
+            if (!exists()) mkdirs()
+        }
+
+        fun copyDocIfPresent(docId: String?, targetName: String) {
+            if (docId == null) return
+            val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+            val targetFile = File(cacheDir, targetName)
+            context.contentResolver.openInputStream(docUri)?.use { input ->
+                targetFile.outputStream().use { output ->
+                    input.copyTo(output, bufferSize = 64 * 1024)
+                }
+            } ?: throw FileNotFoundException("無法讀取 SAF 檔案: $targetName")
+        }
+
+        copyDocIfPresent(scan.encoderDocId, "encoder.onnx")
+        copyDocIfPresent(scan.decoderDocId, "decoder.onnx")
+        copyDocIfPresent(scan.qnnEncoderDocId, "encoder_qnn_ctx.onnx")
+        copyDocIfPresent(scan.qnnDecoderDocId, "decoder_qnn_ctx.onnx")
+        copyDocIfPresent(scan.vocabDocId, "vocab.json")
+        cacheDir
+    }
+
     private fun runGreedyDecode(
         dec: OrtSession,
         encHiddenTensor: OnnxTensor,
@@ -332,7 +522,6 @@ class LocalNpuAsrEngine(
         }
     }
 
-    @Suppress("UNCHECKED_CAST")
     private fun extractLastStepArgmax(rawValue: Any?): Int {
         val lastStepLogits: FloatArray = when (rawValue) {
             is Array<*> -> {

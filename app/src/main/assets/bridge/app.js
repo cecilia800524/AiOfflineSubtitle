@@ -7,9 +7,14 @@
     backend: document.getElementById('bridgeBackend'),
     latency: document.getElementById('bridgeLatency'),
     rtf: document.getElementById('bridgeRtf'),
-    modelInfo: document.getElementById('bridgeModelInfo'),
     sysInfo: document.getElementById('bridgeSysInfo'),
     vad: document.getElementById('bridgeVad'),
+    inputModelPath: document.getElementById('inputBridgeModelPath'),
+    modelSizeTag: document.getElementById('bridgeModelSizeTag'),
+    btnPickFolder: document.getElementById('btnPickModelFolder'),
+    btnApplyPath: document.getElementById('btnApplyModelPath'),
+    btnResetPath: document.getElementById('btnResetModelPath'),
+    pathAlert: document.getElementById('bridgePathAlert'),
     list: document.getElementById('bridgeSubtitleList'),
     btnOverlay: document.getElementById('btnBridgeOverlay'),
     btnClear: document.getElementById('btnBridgeClear'),
@@ -42,11 +47,24 @@
     el.rtf.textContent = 'RTF: ' + rtf.toFixed(3);
     el.rtf.className = 'metric ' + (rtf <= 0 ? '' : (rtf < 0.3 ? 'ok' : 'warn'));
 
-    el.modelInfo.textContent = '模型路徑: ' + (state.resolvedModelPath || '-');
+    const diskMb = Number(state.modelsDiskSizeMb || 0).toFixed(1);
+    el.modelSizeTag.textContent = diskMb + ' MB';
     el.sysInfo.textContent =
-      '磁碟: ' + Number(state.modelsDiskSizeMb || 0).toFixed(1) + 'MB | ' +
+      '磁碟: ' + diskMb + 'MB | ' +
       'PSS: ' + Number(state.pssMemoryMb || 0).toFixed(1) + 'MB | ' +
       '漂移: ' + state.timelineDriftMs + 'ms';
+
+    if (document.activeElement !== el.inputModelPath && state.currentModelPath) {
+      el.inputModelPath.value = state.currentModelPath;
+    }
+
+    if (state.modelPathError) {
+      el.pathAlert.textContent = state.modelPathError;
+      el.pathAlert.classList.remove('hidden');
+    } else {
+      el.pathAlert.textContent = '';
+      el.pathAlert.classList.add('hidden');
+    }
 
     el.vad.textContent = state.isSpeechActive ? 'VAD: 語音中' : 'VAD: 靜音';
     el.vad.className = 'vad-badge ' + (state.isSpeechActive ? 'active' : '');
@@ -54,9 +72,15 @@
     el.btnOverlay.classList.toggle('active', Boolean(state.isOverlayActive));
     el.btnBackendToggle.textContent = state.backendTag === 'QNN_NPU' ? 'NPU 優先' : 'CPU 模式';
 
+    const busy = Boolean(state.isRunning || state.isFileTranscribing);
+    el.inputModelPath.disabled = busy;
+    el.btnPickFolder.disabled = busy;
+    el.btnApplyPath.disabled = busy;
+    el.btnResetPath.disabled = busy;
+
     document.querySelectorAll('[data-source]').forEach(function (btn) {
       btn.classList.toggle('active', btn.dataset.source === state.inputSource);
-      btn.disabled = Boolean(state.isRunning || state.isFileTranscribing);
+      btn.disabled = busy;
     });
 
     el.btnStartStop.textContent = state.isRunning ? '停止服務' : '啟動服務';
@@ -79,6 +103,18 @@
     }).join('');
     el.list.scrollTop = el.list.scrollHeight;
   }
+
+  el.btnPickFolder.addEventListener('click', function () {
+    client.pickModelFolder();
+  });
+
+  el.btnApplyPath.addEventListener('click', function () {
+    client.applyModelPath(el.inputModelPath.value);
+  });
+
+  el.btnResetPath.addEventListener('click', function () {
+    client.resetModelPath();
+  });
 
   el.btnOverlay.addEventListener('click', function () { client.toggleOverlay(); });
   el.btnClear.addEventListener('click', function () { client.clearSubtitles(); });

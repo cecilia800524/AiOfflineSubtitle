@@ -23,6 +23,15 @@
         listeners.delete(cb);
       };
     },
+    pickModelFolder: function () {
+      if (nativeBridge) nativeBridge.pickModelFolder();
+    },
+    applyModelPath: function (path) {
+      if (nativeBridge) nativeBridge.applyModelPath(path);
+    },
+    resetModelPath: function () {
+      if (nativeBridge) nativeBridge.resetModelPath();
+    },
     startService: function (source) {
       if (nativeBridge) nativeBridge.startService(source);
     },

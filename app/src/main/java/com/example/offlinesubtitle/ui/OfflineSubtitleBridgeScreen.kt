@@ -49,28 +49,27 @@ fun OfflineSubtitleBridgeScreen(
     bridgeState: BridgeControlState,
     hasMicPermission: Boolean
 ) {
-    var showEmbeddedWebUi by remember { mutableStateOf(false) }
+    var showEmbeddedWebUi by remember { mutableStateOf(true) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        // 模式切換：State Handlers 檢視面板 / 內嵌離線 WebView Bridge UI
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             FilterChip(
-                selected = !showEmbeddedWebUi,
-                onClick = { showEmbeddedWebUi = false },
-                label = { Text("Bridge State Handlers") }
-            )
-            FilterChip(
                 selected = showEmbeddedWebUi,
                 onClick = { showEmbeddedWebUi = true },
                 label = { Text("離線 WebView Bridge UI") }
+            )
+            FilterChip(
+                selected = !showEmbeddedWebUi,
+                onClick = { showEmbeddedWebUi = false },
+                label = { Text("State Handlers 檢視") }
             )
         }
 
@@ -131,7 +130,7 @@ private fun BridgeStateHandlersInspector(
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
-                        text = "外部模型目錄 (getExternalFilesDir): ${uiState.resolvedModelPath}",
+                        text = "目前模型路徑 (${if (uiState.isCustomModelPath) "自訂" else "預設"}): ${uiState.currentModelPath}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -208,16 +207,16 @@ private fun BridgeStateHandlersInspector(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedButton(
-                            onClick = { bridge.handleRefreshExternalModels() },
+                            onClick = { bridge.handlePickModelFolderClick() },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("掃描外部模型")
+                            Text("SAF 選取模型目錄")
                         }
                         OutlinedButton(
-                            onClick = { bridge.handleInjectBuiltInTestMode() },
+                            onClick = { bridge.handleResetModelPath() },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("注入測試字幕")
+                            Text("重設預設路徑")
                         }
                     }
                 }

@@ -32,20 +32,15 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * MainActivity 註冊給 Bridge 的宿主權限與系統挑選器回呼介面（不持有 Activity 強參考）。
- */
 interface BridgeHostCallbacks {
     fun requestMicAndNotificationPermissions()
     fun launchMediaProjectionConsent()
     fun launchOverlayPermissionSettings()
     fun launchAudioFilePicker()
+    fun launchModelFolderPicker()
     fun launchShareSheet(shareUri: Uri, mimeType: String, formatLabel: String)
 }
 
-/**
- * Bridge 控制中心的可觀測狀態與 State Handler 記錄。
- */
 data class BridgeControlState(
     val isHostAttached: Boolean = false,
     val isWebViewAttached: Boolean = false,
@@ -56,11 +51,6 @@ data class BridgeControlState(
     val commandHistory: List<String> = emptyList()
 )
 
-/**
- * OfflineSubtitleBridge：
- * 統一連接 MainActivity、SubtitleStateManager、SubtitleForegroundService 與離線 WebView UI，
- * 提供雙向狀態同步與 State Handlers。
- */
 class OfflineSubtitleBridge(
     private val appContext: Context,
     val stateManager: SubtitleStateManager,
@@ -123,7 +113,35 @@ class OfflineSubtitleBridge(
         Log.d(TAG_SERVICE, "Bridge observed service lifecycle -> $lifecycleEvent")
     }
 
-    // --- State Handlers（供 Compose ViewModel 與 WebView JavascriptInterface 共用）---
+    // --- 模型路徑設定 State Handlers（同步於 MainScreen 與 WebView Bridge UI）---
+
+    fun handlePickModelFolderClick() {
+        recordCommand("PICK_MODEL_FOLDER_SAF")
+        hostCallbacks?.launchModelFolderPicker()
+    }
+
+    fun handleModelFolderPicked(treeUri: Uri) {
+        val uriString = treeUri.toString()
+        recordCommand("SAF_FOLDER_SELECTED:$uriString")
+        stateManager.applyCustomModelPath(uriString)
+    }
+
+    fun handleApplyModelPath(rawPath: String) {
+        recordCommand("APPLY_MODEL_PATH:${rawPath.trim()}")
+        stateManager.applyCustomModelPath(rawPath)
+    }
+
+    fun handleResetModelPath() {
+        recordCommand("RESET_MODEL_PATH_DEFAULT")
+        stateManager.resetModelPathToDefault()
+    }
+
+    fun handleRefreshExternalModels() {
+        recordCommand("REFRESH_EXTERNAL_MODELS")
+        stateManager.refreshModelDiskUsage(validateAndAlert = false)
+    }
+
+    // --- 音訊服務與 ASR 控制 State Handlers ---
 
     fun handleStartOrStopToggle(hasMicPermission: Boolean) {
         if (stateManager.uiState.value.isRunning) {
@@ -287,15 +305,25 @@ class OfflineSubtitleBridge(
         }
     }
 
-    fun handleRefreshExternalModels() {
-        recordCommand("REFRESH_EXTERNAL_MODELS")
-        stateManager.refreshModelDiskUsage()
-    }
-
     // --- WebView @JavascriptInterface 橋接端點 ---
 
     @JavascriptInterface
     fun getStateJson(): String = serializeUiState(stateManager.uiState.value)
+
+    @JavascriptInterface
+    fun pickModelFolder() {
+        mainScope.launch { handlePickModelFolderClick() }
+    }
+
+    @JavascriptInterface
+    fun applyModelPath(path: String) {
+        mainScope.launch { handleApplyModelPath(path) }
+    }
+
+    @JavascriptInterface
+    fun resetModelPath() {
+        mainScope.launch { handleResetModelPath() }
+    }
 
     @JavascriptInterface
     fun startService(sourceName: String) {
@@ -374,8 +402,6 @@ class OfflineSubtitleBridge(
         }
     }
 
-    // --- 內部狀態觀察與序列化 ---
-
     private fun startStateObserver() {
         statePushJob?.cancel()
         statePushJob = mainScope.launch {
@@ -444,7 +470,10 @@ class OfflineSubtitleBridge(
             put("inputSource", state.inputSource.name)
             put("backendTag", state.backendTag.label)
             put("activeEngineLabel", state.activeEngineLabel)
-            put("resolvedModelPath", state.resolvedModelPath)
+            put("currentModelPath", state.currentModelPath)
+            put("isCustomModelPath", state.isCustomModelPath)
+            put("modelPathError", state.modelPathError ?: "")
+            put("modelPathAlertEventId", state.modelPathAlertEventId)
             put("isModelLoaded", state.isModelLoaded)
             put("modelsDiskSizeMb", state.modelsDiskSizeMb)
             put("isSpeechActive", state.isSpeechActive)
