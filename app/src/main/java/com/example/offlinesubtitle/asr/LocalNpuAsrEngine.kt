@@ -25,17 +25,21 @@ import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.sin
 
+/**
+ * 對應 getExternalFilesDir(null)/models/<dirName>：
+ * 預設 WHISPER_TINY_QNN -> Android/data/com.example.offlinesubtitle/files/models/whisper-tiny/
+ */
 enum class LocalModelProfile(
     val dirName: String,
     val displayName: String
 ) {
-    WHISPER_SMALL_QNN("whisper-small-qnn", "Whisper Small (本地 NPU)"),
-    WHISPER_TINY_QNN("whisper-tiny-qnn", "Whisper Tiny (本地極速)")
+    WHISPER_TINY_QNN("whisper-tiny", "Whisper Tiny (QNN NPU)"),
+    WHISPER_SMALL_QNN("whisper-small", "Whisper Small (本地 NPU)")
 }
 
 class LocalNpuAsrEngine(
     private val context: Context,
-    private var profile: LocalModelProfile = LocalModelProfile.WHISPER_SMALL_QNN
+    private var profile: LocalModelProfile = LocalModelProfile.WHISPER_TINY_QNN
 ) : AsrEngine {
 
     companion object {
@@ -78,14 +82,41 @@ class LocalNpuAsrEngine(
     override val currentBackend: BackendTag
         get() = activeBackend
 
-    fun getModelsRootDir(): File = File(context.filesDir, "models").apply {
-        if (!exists()) mkdirs()
+    init {
+        ensureExternalModelDirectories()
     }
 
-    fun getActiveModelDir(): File = File(getModelsRootDir(), profile.dirName)
+    /**
+     * 使用 getExternalFilesDir(null)/models，讓手機檔案總管可直接瀏覽：
+     * Android/data/com.example.offlinesubtitle/files/models/whisper-tiny/
+     */
+    fun getModelsRootDir(): File {
+        val externalFilesRoot = context.getExternalFilesDir(null) ?: context.filesDir
+        return File(externalFilesRoot, "models").apply {
+            if (!exists()) mkdirs()
+        }
+    }
+
+    fun getActiveModelDir(): File {
+        return File(getModelsRootDir(), profile.dirName).apply {
+            if (!exists()) mkdirs()
+        }
+    }
+
+    private fun ensureExternalModelDirectories() {
+        runCatching {
+            val root = getModelsRootDir()
+            LocalModelProfile.entries.forEach { p ->
+                val dir = File(root, p.dirName)
+                if (!dir.exists()) dir.mkdirs()
+            }
+            Log.i(TAG_STATE, "External model directory ready: ${getActiveModelDir().absolutePath}")
+        }
+    }
 
     fun calculateModelsDiskUsageMb(): Double {
         val root = getModelsRootDir()
+        if (!root.exists()) return 0.0
         val totalBytes = root.walkTopDown()
             .filter { it.isFile }
             .sumOf { it.length() }
@@ -94,6 +125,7 @@ class LocalNpuAsrEngine(
 
     fun setProfile(newProfile: LocalModelProfile) {
         profile = newProfile
+        ensureExternalModelDirectories()
     }
 
     fun getProfile(): LocalModelProfile = profile
@@ -127,7 +159,7 @@ class LocalNpuAsrEngine(
             }
 
             if (encFile == null || decFile == null) {
-                val msg = "找不到本地模型檔案，請放置 encoder.onnx 與 decoder.onnx 於 ${modelDir.absolutePath}"
+                val msg = "找不到本地模型檔案，請將 encoder.onnx 與 decoder.onnx 放入 ${modelDir.absolutePath}"
                 Log.w(TAG_STATE, msg)
                 return@withContext Result.failure(FileNotFoundException(msg))
             }
@@ -144,7 +176,7 @@ class LocalNpuAsrEngine(
                     qnnOpts.close()
                     activeBackend = BackendTag.QNN_NPU
                     loadedWithQnn = true
-                    Log.i(TAG_PERF, "Backend=QNN_NPU (loaded ${encFile.name}, threads=$numThreads)")
+                    Log.i(TAG_PERF, "Backend=QNN_NPU (loaded ${encFile.absolutePath}, threads=$numThreads)")
                 } catch (t: Throwable) {
                     Log.w(TAG_PERF, "QNN EP init failed (${t.message}), falling back to CPU_FALLBACK")
                     releaseInternal()
@@ -160,7 +192,7 @@ class LocalNpuAsrEngine(
                     decoderSession = ortEnv.createSession(cpuDec.absolutePath, cpuOpts)
                     cpuOpts.close()
                     activeBackend = BackendTag.CPU_FALLBACK
-                    Log.i(TAG_PERF, "Backend=CPU_FALLBACK (loaded ${cpuEnc.name}, intraOpThreads=$numThreads)")
+                    Log.i(TAG_PERF, "Backend=CPU_FALLBACK (loaded ${cpuEnc.absolutePath}, intraOpThreads=$numThreads)")
                 } catch (e: OrtException) {
                     releaseInternal()
                     return@withContext Result.failure(e)
@@ -172,7 +204,7 @@ class LocalNpuAsrEngine(
             val loadCostMs = SystemClock.elapsedRealtime() - loadStart
             Log.i(
                 TAG_PERF,
-                "Model loaded profile=${profile.dirName} Backend=${activeBackend.label} " +
+                "Model loaded profile=${profile.dirName} path=${modelDir.absolutePath} Backend=${activeBackend.label} " +
                     "loadTime=${loadCostMs}ms diskUsage=${"%.2f".format(calculateModelsDiskUsageMb())}MB"
             )
             Result.success(Unit)

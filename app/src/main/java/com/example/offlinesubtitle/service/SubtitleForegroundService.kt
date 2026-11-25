@@ -25,6 +25,7 @@ import com.example.offlinesubtitle.asr.LocalNpuAsrEngine
 import com.example.offlinesubtitle.asr.MockNpuAsrEngine
 import com.example.offlinesubtitle.audio.AudioCaptureManager
 import com.example.offlinesubtitle.audio.AudioInputSource
+import com.example.offlinesubtitle.bridge.OfflineSubtitleBridge
 import com.example.offlinesubtitle.subtitle.SubtitleStateManager
 import com.example.offlinesubtitle.ui.FloatingSubtitleOverlay
 import kotlinx.coroutines.Job
@@ -39,13 +40,15 @@ object SubtitleRuntimeCoordinator {
     private var mockEngine: MockNpuAsrEngine? = null
     @Volatile
     private var localEngine: LocalNpuAsrEngine? = null
+    @Volatile
+    private var bridge: OfflineSubtitleBridge? = null
 
     fun getOrCreateStateManager(appContext: Context): SubtitleStateManager {
         return stateManager ?: synchronized(this) {
             stateManager ?: run {
                 val ctx = appContext.applicationContext
-                val mock = MockNpuAsrEngine().also { mockEngine = it }
-                val local = LocalNpuAsrEngine(ctx).also { localEngine = it }
+                val mock = getMockEngine()
+                val local = getLocalEngine(ctx)
                 SubtitleStateManager(
                     audioCaptureManager = AudioCaptureManager(),
                     initialEngine = mock,
@@ -55,10 +58,26 @@ object SubtitleRuntimeCoordinator {
         }
     }
 
-    fun getMockEngine(): MockNpuAsrEngine = mockEngine ?: MockNpuAsrEngine().also { mockEngine = it }
+    fun getMockEngine(): MockNpuAsrEngine = mockEngine ?: synchronized(this) {
+        mockEngine ?: MockNpuAsrEngine().also { mockEngine = it }
+    }
 
-    fun getLocalEngine(appContext: Context): LocalNpuAsrEngine =
+    fun getLocalEngine(appContext: Context): LocalNpuAsrEngine = localEngine ?: synchronized(this) {
         localEngine ?: LocalNpuAsrEngine(appContext.applicationContext).also { localEngine = it }
+    }
+
+    fun getOrCreateBridge(appContext: Context): OfflineSubtitleBridge = bridge ?: synchronized(this) {
+        bridge ?: run {
+            val ctx = appContext.applicationContext
+            val manager = getOrCreateStateManager(ctx)
+            OfflineSubtitleBridge(
+                appContext = ctx,
+                stateManager = manager,
+                mockAsrEngine = getMockEngine(),
+                localNpuAsrEngine = getLocalEngine(ctx)
+            ).also { bridge = it }
+        }
+    }
 }
 
 class SubtitleForegroundService : LifecycleService() {
@@ -86,6 +105,7 @@ class SubtitleForegroundService : LifecycleService() {
 
     private val binder = LocalBinder()
     private lateinit var stateManager: SubtitleStateManager
+    private lateinit var bridge: OfflineSubtitleBridge
     private lateinit var floatingOverlay: FloatingSubtitleOverlay
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -104,6 +124,7 @@ class SubtitleForegroundService : LifecycleService() {
         super.onCreate()
         createNotificationChannel()
         stateManager = SubtitleRuntimeCoordinator.getOrCreateStateManager(applicationContext)
+        bridge = SubtitleRuntimeCoordinator.getOrCreateBridge(applicationContext)
         floatingOverlay = FloatingSubtitleOverlay(
             context = applicationContext,
             stateManager = stateManager,
@@ -114,6 +135,7 @@ class SubtitleForegroundService : LifecycleService() {
                 hideOverlay()
             }
         )
+        bridge.notifyServiceLifecycle("CREATED")
         Log.i(TAG_SERVICE, "SubtitleForegroundService created")
     }
 
@@ -159,6 +181,7 @@ class SubtitleForegroundService : LifecycleService() {
         startHeartbeat()
         stateManager.setInputSource(source)
         stateManager.start()
+        bridge.notifyServiceLifecycle("RUNNING_${source.name}")
         Log.i(TAG_SERVICE, "ForegroundService started with MICROPHONE type, source=${source.name}")
     }
 
@@ -184,6 +207,7 @@ class SubtitleForegroundService : LifecycleService() {
         startHeartbeat()
         stateManager.setInputSource(AudioInputSource.SYSTEM_AUDIO)
         stateManager.start(mediaProjection = projection)
+        bridge.notifyServiceLifecycle("RUNNING_SYSTEM_AUDIO")
         Log.i(TAG_SERVICE, "ForegroundService started with MEDIA_PROJECTION type")
     }
 
@@ -197,6 +221,7 @@ class SubtitleForegroundService : LifecycleService() {
         )
         acquireWakeLock()
         startHeartbeat()
+        bridge.notifyServiceLifecycle("OVERLAY_STANDBY")
     }
 
     private fun handleOverlaySourceSwitch(nextSource: AudioInputSource) {
@@ -211,17 +236,20 @@ class SubtitleForegroundService : LifecycleService() {
         } else {
             stateManager.start()
         }
+        bridge.notifyServiceLifecycle("SWITCHED_${nextSource.name}")
     }
 
     fun showOverlay() {
         floatingOverlay.show()
         stateManager.setOverlayActive(true)
+        bridge.notifyServiceLifecycle("OVERLAY_SHOWN")
         Log.i(TAG_SERVICE, "FloatingSubtitleOverlay shown")
     }
 
     fun hideOverlay() {
         floatingOverlay.hide()
         stateManager.setOverlayActive(false)
+        bridge.notifyServiceLifecycle("OVERLAY_HIDDEN")
         Log.i(TAG_SERVICE, "FloatingSubtitleOverlay hidden")
     }
 
@@ -232,6 +260,7 @@ class SubtitleForegroundService : LifecycleService() {
         releaseWakeLock()
         heartbeatJob?.cancel()
         heartbeatJob = null
+        bridge.notifyServiceLifecycle("STOPPED")
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
         Log.i(TAG_SERVICE, "SubtitleForegroundService stopped cleanly")
@@ -324,6 +353,7 @@ class SubtitleForegroundService : LifecycleService() {
         releaseProjection()
         releaseWakeLock()
         heartbeatJob?.cancel()
+        bridge.notifyServiceLifecycle("DESTROYED")
         Log.i(TAG_SERVICE, "SubtitleForegroundService destroyed")
     }
 }

@@ -8,6 +8,11 @@
     public *** addXnnpack(java.util.Map);
 }
 
+# 保留 OfflineSubtitleBridge 供離線 WebView 呼叫之 JavascriptInterface 方法
+-keepclassmembers class com.example.offlinesubtitle.bridge.OfflineSubtitleBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
 # 保留本專案資料模型與前景服務名稱
 -keep class com.example.offlinesubtitle.asr.SubtitleSegment { *; }
 -keep class com.example.offlinesubtitle.service.SubtitleForegroundService { *; }

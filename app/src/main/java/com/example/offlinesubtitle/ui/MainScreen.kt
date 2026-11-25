@@ -66,6 +66,8 @@ import com.example.offlinesubtitle.asr.BackendTag
 import com.example.offlinesubtitle.asr.LocalModelProfile
 import com.example.offlinesubtitle.asr.SubtitleSegment
 import com.example.offlinesubtitle.audio.AudioInputSource
+import com.example.offlinesubtitle.bridge.BridgeControlState
+import com.example.offlinesubtitle.bridge.OfflineSubtitleBridge
 import com.example.offlinesubtitle.export.SubtitleExportFormat
 import com.example.offlinesubtitle.subtitle.SubtitleUiState
 import java.util.Locale
@@ -73,9 +75,10 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
+    bridge: OfflineSubtitleBridge,
     uiState: SubtitleUiState,
+    bridgeState: BridgeControlState,
     hasMicPermission: Boolean,
-    exportStatusMessage: String?,
     onRequestMicPermission: () -> Unit,
     onStartStopClick: () -> Unit,
     onToggleOverlayClick: () -> Unit,
@@ -143,17 +146,22 @@ fun MainScreen(
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    text = { Text("即時字幕與背景服務") }
+                    text = { Text("即時字幕") }
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    text = { Text("編輯與匯出 (${uiState.segments.size})") }
+                    text = { Text("編輯匯出 (${uiState.segments.size})") }
+                )
+                Tab(
+                    selected = selectedTab == 2,
+                    onClick = { selectedTab = 2 },
+                    text = { Text("Bridge UI") }
                 )
             }
 
-            if (selectedTab == 0) {
-                LiveCaptionTabContent(
+            when (selectedTab) {
+                0 -> LiveCaptionTabContent(
                     uiState = uiState,
                     hasMicPermission = hasMicPermission,
                     onRequestMicPermission = onRequestMicPermission,
@@ -165,14 +173,19 @@ fun MainScreen(
                     onSelectInputSource = onSelectInputSource,
                     onSelectBackend = onSelectBackend
                 )
-            } else {
-                TranscriptEditorScreen(
+                1 -> TranscriptEditorScreen(
                     segments = uiState.segments,
-                    exportStatusMessage = exportStatusMessage,
+                    exportStatusMessage = bridgeState.exportStatusMessage,
                     onEditSegment = onEditSegment,
                     onExportAndSave = onExportAndSave,
                     onExportAndShare = onExportAndShare,
                     onLoadBuiltInTestMode = onLoadBuiltInTestMode
+                )
+                else -> OfflineSubtitleBridgeScreen(
+                    bridge = bridge,
+                    uiState = uiState,
+                    bridgeState = bridgeState,
+                    hasMicPermission = hasMicPermission
                 )
             }
         }
@@ -392,6 +405,17 @@ private fun TelemetryStatusBanner(uiState: SubtitleUiState) {
                 }
             }
 
+            if (uiState.resolvedModelPath.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "模型路徑: ${uiState.resolvedModelPath}",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
             Spacer(modifier = Modifier.height(6.dp))
 
             Row(
@@ -599,7 +623,7 @@ private fun EmptySubtitlePlaceholder(
             text = if (isRunning) {
                 "前景服務運作中，偵測到語音後將即時顯示字幕..."
             } else {
-                "選擇「麥克風 / 系統音訊 / 模擬音訊」並點擊開始；可隨時開啟右上角懸浮窗"
+                "選擇「麥克風 / 系統音訊 / 模擬音訊」並點擊開始；可隨時開啟右上角懸浮窗或切換 Bridge UI"
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant

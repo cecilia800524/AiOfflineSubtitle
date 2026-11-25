@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 離線音訊擷取、前景服務、防休眠與懸浮窗權限（無任何網路權限） -->
+    <!-- 離線音訊擷取、前景服務、防休眠與懸浮窗權限（嚴禁宣告任何網路權限） -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />

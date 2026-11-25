@@ -48,7 +48,7 @@ class MockNpuAsrEngine : AsrEngine {
         private val CODE_SWITCHING_SCRIPTS = listOf(
             "大家好，今天我們在 Snapdragon 8s Gen 4 裝置上測試離線即時字幕系統，透過 Hexagon NPU 與 QNN 加速推論效能。",
             "目前音訊管線採用 16kHz Mono PCM 格式輸入，並搭配 VAD 偵測進行靜音過濾與 30 秒滑動視窗切分。",
-            "在 Jetpack Compose 介面中，我們將 Draft 草稿字幕與 Final 定稿字幕分離，確保端到端延遲低於 800ms。",
+            "在 Jetpack Compose 與 OfflineSubtitleBridge 介面中，我們將 Draft 草稿字幕與 Final 定稿字幕分離，確保延遲低於 800ms。",
             "這套架構完全不依賴 Cloud API 或網路連線，支援繁體中文與 English 技術名詞混合辨識。",
             "當講者連續發言超過 30 秒邊界時，系統會保留最後 2 秒的重疊音訊緩衝，避免關鍵字詞被截斷。"
         )

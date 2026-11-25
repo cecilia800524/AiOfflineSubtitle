@@ -37,6 +37,7 @@ data class SubtitleUiState(
     val inputSource: AudioInputSource = AudioInputSource.MICROPHONE,
     val backendTag: BackendTag = BackendTag.QNN_NPU,
     val activeEngineLabel: String = "Mock NPU",
+    val resolvedModelPath: String = "",
     val isModelLoaded: Boolean = true,
     val modelsDiskSizeMb: Double = 0.0,
     val isSpeechActive: Boolean = false,
@@ -119,6 +120,7 @@ class SubtitleStateManager(
     private val _uiState = MutableStateFlow(
         SubtitleUiState(
             backendTag = initialEngine.currentBackend,
+            resolvedModelPath = localNpuAsrEngine?.getActiveModelDir()?.absolutePath ?: "",
             modelsDiskSizeMb = localNpuAsrEngine?.calculateModelsDiskUsageMb() ?: 0.0
         )
     )
@@ -127,8 +129,13 @@ class SubtitleStateManager(
     fun getCurrentEngine(): AsrEngine = activeAsrEngine
 
     fun refreshModelDiskUsage() {
-        val sizeMb = localNpuAsrEngine?.calculateModelsDiskUsageMb() ?: 0.0
-        _uiState.update { it.copy(modelsDiskSizeMb = sizeMb) }
+        val local = localNpuAsrEngine ?: return
+        _uiState.update {
+            it.copy(
+                resolvedModelPath = local.getActiveModelDir().absolutePath,
+                modelsDiskSizeMb = local.calculateModelsDiskUsageMb()
+            )
+        }
     }
 
     fun setOverlayActive(active: Boolean) {
@@ -158,6 +165,7 @@ class SubtitleStateManager(
 
             val initResult = engine.initialize()
             val diskMb = localNpuAsrEngine?.calculateModelsDiskUsageMb() ?: 0.0
+            val activePath = localNpuAsrEngine?.getActiveModelDir()?.absolutePath ?: ""
             activeAsrEngine = engine
 
             if (initResult.isSuccess) {
@@ -166,6 +174,7 @@ class SubtitleStateManager(
                         activeEngineLabel = label,
                         backendTag = engine.currentBackend,
                         isModelLoaded = true,
+                        resolvedModelPath = activePath,
                         modelsDiskSizeMb = diskMb,
                         statusMessage = "已載入 $label (${engine.currentBackend.label})"
                     )
@@ -175,6 +184,7 @@ class SubtitleStateManager(
                     it.copy(
                         activeEngineLabel = label,
                         isModelLoaded = false,
+                        resolvedModelPath = activePath,
                         modelsDiskSizeMb = diskMb,
                         statusMessage = initResult.exceptionOrNull()?.message ?: "載入失敗"
                     )
@@ -234,7 +244,7 @@ class SubtitleStateManager(
             ),
             SubtitleSegment(
                 id = baseId + 3,
-                text = "我們支援 Qualcomm QNN HTP 加速以及 Jetpack Compose 懸浮視窗疊加顯示。",
+                text = "Whisper Tiny 模型存放於 getExternalFilesDir 外部私有目錄，並透過 OfflineSubtitleBridge 同步狀態。",
                 isFinal = true,
                 startTimeMs = 7_500L,
                 endTimeMs = 11_800L,

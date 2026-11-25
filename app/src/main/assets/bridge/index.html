@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OfflineSubtitle Bridge UI</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="header">
+      <div>
+        <h1>OfflineSubtitle Bridge UI</h1>
+        <p id="bridgeStatus" class="sub">等待原生橋接同步...</p>
+      </div>
+      <div class="header-btns">
+        <button id="btnBridgeOverlay" class="btn-sm">懸浮窗</button>
+        <button id="btnBridgeClear" class="btn-sm">清除</button>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="row">
+        <span id="bridgeBackend" class="pill pill-npu">QNN_NPU</span>
+        <span id="bridgeLatency" class="metric">延遲: 0 ms</span>
+        <span id="bridgeRtf" class="metric">RTF: 0.000</span>
+      </div>
+      <div class="sub-row">
+        <span id="bridgeModelInfo">模型目錄: Android/data/.../files/models/whisper-tiny</span>
+      </div>
+      <div class="sub-row">
+        <span id="bridgeSysInfo">磁碟: 0.0MB | PSS: 0.0MB | 漂移: 0ms</span>
+        <span id="bridgeVad" class="vad-badge">VAD: 靜音</span>
+      </div>
+    </section>
+
+    <section class="controls">
+      <select id="selectBridgeModel" class="select">
+        <option value="MOCK">Mock NPU (原型測試)</option>
+        <option value="WHISPER_TINY">Whisper Tiny (QNN NPU)</option>
+        <option value="WHISPER_SMALL">Whisper Small (本地 NPU)</option>
+      </select>
+      <button id="btnBridgeUnload" class="btn-sm">卸載模型</button>
+      <button id="btnBridgeImport" class="btn-sm">匯入音檔</button>
+    </section>
+
+    <section class="controls">
+      <button class="chip active" data-source="MICROPHONE">麥克風</button>
+      <button class="chip" data-source="SYSTEM_AUDIO">系統音訊</button>
+      <button class="chip" data-source="SIMULATED_PCM">模擬音訊</button>
+      <button id="btnBridgeBackendToggle" class="chip">NPU 優先</button>
+    </section>
+
+    <section id="bridgeSubtitleList" class="list">
+      <div class="empty">透過 OfflineSubtitleBridge 即時同步原生字幕狀態</div>
+    </section>
+
+    <footer class="footer">
+      <button id="btnBridgeTestInject" class="btn-sm">測試資料</button>
+      <button id="btnBridgeExportSrt" class="btn-sm">匯出 SRT</button>
+      <button id="btnBridgeStartStop" class="btn-primary">啟動服務</button>
+    </footer>
+  </div>
+
+  <script defer src="./bridge.js"></script>
+  <script defer src="./app.js"></script>
+</body>
+</html>
